@@ -17,7 +17,7 @@ This guide explains how to connect Claude Code (running in WSL2) to your Windows
 
 ```
 Chrome (Windows) --remote-debugging-port=9222
-        ↕ CDP Protocol
+        ↕ CDP Protocol (via WSL2 NAT gateway IP)
 MCP Chrome DevTools Server (WSL2)
         ↕ MCP Protocol
 Claude Code (WSL2)
@@ -30,48 +30,93 @@ Claude Code (WSL2)
 - Node.js installed in WSL2
 - Claude Code installed in WSL2
 
-## Setup
+## Quick Install
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+This will:
+1. Install `chrome-devtools-mcp` globally
+2. Create the WSL2 wrapper script at `~/.local/bin/`
+3. Register the MCP server in Claude Code
+
+## Manual Setup
 
 ### 1. Install the MCP package
 
 ```bash
-npm install -g @anthropic-ai/mcp-chrome-devtools
+npm install -g chrome-devtools-mcp@latest
 ```
 
-### 2. Configure Claude Code
+### 2. Create the WSL2 wrapper script
 
-Add the MCP server to your Claude Code settings (`~/.claude/settings.json`):
+The key challenge on WSL2: Chrome runs on Windows, but the MCP server runs in Linux. They can't talk via `localhost` — you need the WSL2 NAT gateway IP. This wrapper resolves it dynamically:
+
+```bash
+mkdir -p ~/.local/bin
+cp scripts/chrome-devtools-mcp-wrapper.sh ~/.local/bin/
+chmod +x ~/.local/bin/chrome-devtools-mcp-wrapper.sh
+```
+
+The wrapper ([`scripts/chrome-devtools-mcp-wrapper.sh`](scripts/chrome-devtools-mcp-wrapper.sh)):
+
+```bash
+#!/bin/bash
+WIN_HOST=$(ip route show default | awk '{print $3}')
+exec npx chrome-devtools-mcp@latest --browserUrl "http://${WIN_HOST}:9222" "$@"
+```
+
+It grabs the Windows host IP from the default route and passes it as `--browserUrl` to the MCP server.
+
+### 3. Register in Claude Code
+
+```bash
+claude mcp add chrome-devtools -s user -- bash ~/.local/bin/chrome-devtools-mcp-wrapper.sh
+```
+
+This adds the following config to your `~/.claude.json` (see [`config/mcp-server.json`](config/mcp-server.json) for reference):
 
 ```json
 {
   "mcpServers": {
     "chrome-devtools": {
-      "command": "npx",
-      "args": ["-y", "@anthropic-ai/mcp-chrome-devtools"]
+      "type": "stdio",
+      "command": "bash",
+      "args": [
+        "/home/<YOUR_USER>/.local/bin/chrome-devtools-mcp-wrapper.sh"
+      ],
+      "env": {}
     }
   }
 }
 ```
 
-Or use the `/mcp` command inside Claude Code to add it interactively.
+### 4. Launch Chrome with remote debugging
 
-### 3. Launch Chrome with remote debugging
-
-**Important:** Close all Chrome instances first, then relaunch with the debugging flag.
+**Important:** Close ALL Chrome instances first (check Task Manager), then relaunch with the debugging flag.
 
 ```bash
 "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222
 ```
 
+Or use the provided script:
+
+```bash
+chmod +x scripts/launch-chrome.sh
+./scripts/launch-chrome.sh
+```
+
 > If Chrome is already running, the debug port won't open. Make sure to fully quit Chrome before relaunching.
 
-### 4. Start Claude Code
+### 5. Start Claude Code
 
 ```bash
 claude
 ```
 
-The MCP Chrome DevTools server will connect automatically to Chrome on port 9222.
+The MCP Chrome DevTools server will connect automatically to Chrome via the WSL2 gateway IP.
 
 ## Usage with local dev server
 
@@ -108,18 +153,49 @@ Claude Code can then:
 | `emulate` | Emulate dark mode, geolocation, network throttling |
 | `performance_start_trace` | Record performance traces |
 
+## Project Structure
+
+```
+mcp-chrome-wsl/
+├── README.md
+├── install.sh                  # One-command setup script
+├── scripts/
+│   ├── chrome-devtools-mcp-wrapper.sh  # WSL2 wrapper (resolves Windows IP)
+│   └── launch-chrome.sh                # Launch Chrome with debug port
+└── config/
+    └── mcp-server.json                 # Example MCP server config for Claude Code
+```
+
+## Why a wrapper script?
+
+On a native Linux or macOS setup, the MCP server connects to Chrome via `localhost:9222`. On WSL2, this doesn't work because:
+
+1. Chrome runs on **Windows** (host)
+2. The MCP server runs in **WSL2** (guest VM)
+3. WSL2 uses a NAT network — `localhost` inside WSL ≠ `localhost` on Windows
+
+The wrapper script solves this by dynamically getting the Windows host IP from `ip route show default` and passing it to the MCP server via `--browserUrl`.
+
 ## Troubleshooting
 
 ### MCP can't connect to Chrome
 - Make sure Chrome was fully closed before relaunching with `--remote-debugging-port=9222`
-- Verify the port is open: `curl http://localhost:9222/json/version`
+- Verify the port is open from WSL2:
+  ```bash
+  WIN_HOST=$(ip route show default | awk '{print $3}')
+  curl http://$WIN_HOST:9222/json/version
+  ```
 
 ### Elements not found after page change
-- The DOM changes invalidate element UIDs — take a new snapshot after navigation or interactions that modify the page
+- DOM changes invalidate element UIDs — take a new snapshot after navigation or interactions that modify the page
 
 ### Chrome opens but debug port doesn't work
-- Check no other Chrome instance is running in the background (Task Manager → End all Chrome processes)
+- Check no other Chrome instance is running (Task Manager → End all Chrome processes)
 - Try a different port if 9222 is in use: `--remote-debugging-port=9333`
+
+### Windows Firewall blocking the connection
+- Allow inbound connections on port 9222 in Windows Firewall settings
+- Or temporarily disable the firewall to test
 
 ## License
 
