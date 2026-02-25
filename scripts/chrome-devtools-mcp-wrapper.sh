@@ -3,7 +3,8 @@
 # Detects network mode and resolves Windows host IP
 
 # In mirrored mode, localhost works directly
-if grep -qi 'networkingMode=mirrored' /mnt/c/Users/neozi/.wslconfig 2>/dev/null; then
+WSLCONFIG="/mnt/c/Users/$(cmd.exe /C "echo %USERNAME%" 2>/dev/null | tr -d '\r')/.wslconfig"
+if grep -qi 'networkingMode=mirrored' "$WSLCONFIG" 2>/dev/null; then
   WIN_HOST="localhost"
 else
   # Classic NAT mode: WSL2 gateway points to Windows
