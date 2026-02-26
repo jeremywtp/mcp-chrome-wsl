@@ -20,7 +20,49 @@ set -euo pipefail
 CDP_PORT="${CDP_PORT:-auto}"
 CDP_PORT_MIN="${CDP_PORT_MIN:-9222}"
 CDP_PORT_MAX="${CDP_PORT_MAX:-9232}"
-WIN_USER="${WIN_USER:-$(cmd.exe /C "echo %USERNAME%" 2>/dev/null | tr -d '\r')}"
+
+# Detection du username Windows avec cache (cmd.exe est tres lent dans WSL2)
+_WIN_USER_CACHE="/tmp/.mcp-chrome-win-user"
+_detect_win_user() {
+  # 1. Variable d'environnement explicite
+  if [[ -n "${WIN_USER:-}" ]]; then
+    echo "$WIN_USER"
+    return
+  fi
+  # 2. Cache fichier (valide 24h)
+  if [[ -f "$_WIN_USER_CACHE" ]]; then
+    local cached age
+    cached=$(cat "$_WIN_USER_CACHE")
+    age=$(( $(date +%s) - $(stat -c %Y "$_WIN_USER_CACHE") ))
+    if [[ -n "$cached" && $age -lt 86400 ]]; then
+      echo "$cached"
+      return
+    fi
+  fi
+  # 3. Detection depuis le filesystem (instantane, pas de cmd.exe)
+  local user
+  for dir in /mnt/c/Users/*/; do
+    user=$(basename "$dir")
+    # Ignorer les dossiers systeme Windows
+    [[ "$user" == "Public" || "$user" == "Default" || "$user" == "Default User" || "$user" == "All Users" ]] && continue
+    # Verifier que c'est un vrai profil (a un dossier AppData)
+    if [[ -d "/mnt/c/Users/${user}/AppData" ]]; then
+      echo "$user" > "$_WIN_USER_CACHE"
+      echo "$user"
+      return
+    fi
+  done
+  # 4. Fallback cmd.exe (lent, ~5-10s)
+  local detected
+  detected=$(cmd.exe /C "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+  if [[ -n "$detected" ]]; then
+    echo "$detected" > "$_WIN_USER_CACHE"
+    echo "$detected"
+    return
+  fi
+  echo ""
+}
+WIN_USER="$(_detect_win_user)"
 CHROME_DEBUG_PS_SCRIPT="${CHROME_DEBUG_PS_SCRIPT:-C:\\Users\\${WIN_USER}\\scripts\\chrome-debug.ps1}"
 
 # Repertoire des locks pour la coordination multi-session
