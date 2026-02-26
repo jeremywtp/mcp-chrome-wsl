@@ -1,7 +1,7 @@
 # chrome-debug.ps1
 # Lance Google Chrome avec le port de debug distant (CDP) pour MCP Chrome DevTools
 # Configure aussi le portproxy v4tov6 pour que WSL2 puisse acceder a Chrome
-# Usage : powershell.exe -ExecutionPolicy Bypass -File C:\Users\neozi\scripts\chrome-debug.ps1
+# Usage : powershell.exe -ExecutionPolicy Bypass -File C:\Users\<USER>\scripts\chrome-debug.ps1
 
 param(
     [int]$Port = 9222,
