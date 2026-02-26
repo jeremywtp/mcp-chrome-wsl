@@ -6,7 +6,9 @@
       "args": [
         "/home/<YOUR_USER>/.local/bin/chrome-devtools-mcp-wrapper.sh"
       ],
-      "env": {}
+      "env": {
+        "CDP_PORT": "9222"
+      }
     }
   }
 }

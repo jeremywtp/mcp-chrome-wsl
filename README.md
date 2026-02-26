@@ -1,58 +1,98 @@
 # mcp-chrome-wsl
 
-Setup guide for using **Chrome DevTools MCP** with **Claude Code** on **WSL2** — navigate, screenshot, click & interact with your browser in real time.
+Setup pour utiliser **Chrome DevTools MCP** avec **Claude Code** sur **WSL2** — naviguer, capturer, cliquer et interagir avec votre navigateur en temps reel.
 
-## Overview
+## Presentation
 
-This guide explains how to connect Claude Code (running in WSL2) to your Windows Chrome browser via the MCP Chrome DevTools server. Once set up, Claude Code can:
+Ce projet connecte Claude Code (sous WSL2) a votre navigateur Chrome Windows via le serveur MCP Chrome DevTools. Une fois configure, Claude Code peut :
 
-- Navigate to any URL (including `localhost` dev servers)
-- Take screenshots and accessibility snapshots
-- Click buttons, fill forms, interact with the page
-- Read console logs and network requests
-- Run JavaScript in the browser
-- Resize viewport for responsive testing
+- Naviguer vers n'importe quelle URL (y compris les serveurs `localhost`)
+- Capturer des screenshots et des snapshots d'accessibilite
+- Cliquer sur des boutons, remplir des formulaires, interagir avec la page
+- Lire les logs console et les requetes reseau
+- Executer du JavaScript dans le navigateur
+- Redimensionner le viewport pour tester le responsive
+- **Lancer Chrome automatiquement** s'il n'est pas deja ouvert
 
 ## Architecture
 
 ```
 Chrome (Windows) --remote-debugging-port=9222
-        ↕ CDP Protocol (via WSL2 NAT gateway IP)
-MCP Chrome DevTools Server (WSL2)
-        ↕ MCP Protocol
+        ↕ CDP Protocol (via WSL2 NAT gateway ou localhost en mode mirrored)
+Wrapper MCP (WSL2) — auto-launch Chrome si besoin
+        ↕ MCP Protocol (stdio)
 Claude Code (WSL2)
 ```
 
-## Prerequisites
+Le wrapper detecte automatiquement le mode reseau WSL2 (NAT ou mirrored) et resout l'adresse de l'hote Windows en consequence.
 
-- Windows 11 with WSL2 (Ubuntu)
-- Google Chrome installed on Windows
-- Node.js installed in WSL2
-- Claude Code installed in WSL2
+## Prerequis
 
-## Quick Install
+- Windows 11 avec WSL2 (Ubuntu)
+- Google Chrome installe sur Windows
+- Node.js >= 18 installe dans WSL2
+- Claude Code installe dans WSL2
+- `curl` disponible dans WSL2
+
+## Installation rapide
 
 ```bash
+git clone https://github.com/user/mcp-chrome-wsl.git
+cd mcp-chrome-wsl
 chmod +x install.sh
 ./install.sh
 ```
 
-This will:
-1. Install `chrome-devtools-mcp` globally
-2. Create the WSL2 wrapper script at `~/.local/bin/`
-3. Register the MCP server in Claude Code
+L'installeur va :
+1. Verifier les prerequis (node, npx, curl, claude, powershell.exe)
+2. Copier le wrapper MCP vers `~/.local/bin/`
+3. Copier le script PowerShell `chrome-debug.ps1` vers Windows (si absent)
+4. Enregistrer le serveur MCP dans Claude Code (`claude mcp add`)
+5. Lancer un diagnostic de verification
 
-## Manual Setup
+## Auto-launch Chrome
 
-### 1. Install the MCP package
+Le wrapper MCP lance Chrome automatiquement s'il n'est pas deja actif :
+
+1. A chaque demarrage du serveur MCP, le wrapper verifie si Chrome ecoute sur le port CDP
+2. Si Chrome n'est pas accessible, il le lance via le script PowerShell `chrome-debug.ps1`
+3. Le script PowerShell :
+   - Configure le portproxy WSL2 (`v4tov6`) pour que WSL puisse atteindre Chrome
+   - Ajoute une regle firewall si necessaire
+   - Ouvre Chrome avec un profil dedie (`claude-debug`) pour ne pas interferer avec votre session normale
+4. Le wrapper attend jusqu'a 12 secondes que Chrome soit pret avant de demarrer le serveur MCP
+
+Resultat : il suffit de lancer `claude` — Chrome demarre tout seul si besoin.
+
+## Multi-session CDP
+
+Le protocole CDP (Chrome DevTools Protocol) supporte nativement les clients multiples. Cela signifie :
+
+- Vous pouvez avoir **plusieurs instances Claude Code** connectees au meme Chrome simultanement
+- Les DevTools de Chrome peuvent rester ouverts en parallele
+- Chaque client MCP recoit les evenements CDP independamment
+
+Aucune configuration supplementaire n'est necessaire.
+
+## Variables d'environnement
+
+| Variable | Defaut | Description |
+|---|---|---|
+| `CDP_PORT` | `9222` | Port du Chrome DevTools Protocol |
+| `CHROME_DEBUG_PS_SCRIPT` | `C:\Users\<USER>\scripts\chrome-debug.ps1` | Chemin Windows du script PowerShell de lancement |
+| `WIN_USER` | *(detection auto)* | Nom d'utilisateur Windows (detecte via `cmd.exe`) |
+
+Exemple d'utilisation avec un port personnalise :
 
 ```bash
-npm install -g chrome-devtools-mcp@latest
+CDP_PORT=9333 claude
 ```
 
-### 2. Create the WSL2 wrapper script
+## Setup manuel
 
-The key challenge on WSL2: Chrome runs on Windows, but the MCP server runs in Linux. They can't talk via `localhost` — you need the WSL2 NAT gateway IP. This wrapper resolves it dynamically:
+### 1. Copier le wrapper MCP
+
+Le wrapper gere la detection reseau WSL2, l'auto-launch Chrome et le demarrage du serveur MCP :
 
 ```bash
 mkdir -p ~/.local/bin
@@ -60,23 +100,23 @@ cp scripts/chrome-devtools-mcp-wrapper.sh ~/.local/bin/
 chmod +x ~/.local/bin/chrome-devtools-mcp-wrapper.sh
 ```
 
-The wrapper ([`scripts/chrome-devtools-mcp-wrapper.sh`](scripts/chrome-devtools-mcp-wrapper.sh)):
+### 2. Installer le script PowerShell
+
+Copiez `config/chrome-debug.ps1` vers Windows :
 
 ```bash
-#!/bin/bash
-WIN_HOST=$(ip route show default | awk '{print $3}')
-exec npx chrome-devtools-mcp@latest --browserUrl "http://${WIN_HOST}:9222" "$@"
+WIN_USER=$(cmd.exe /C "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+mkdir -p "/mnt/c/Users/${WIN_USER}/scripts"
+cp config/chrome-debug.ps1 "/mnt/c/Users/${WIN_USER}/scripts/"
 ```
 
-It grabs the Windows host IP from the default route and passes it as `--browserUrl` to the MCP server.
-
-### 3. Register in Claude Code
+### 3. Enregistrer dans Claude Code
 
 ```bash
 claude mcp add chrome-devtools -s user -- bash ~/.local/bin/chrome-devtools-mcp-wrapper.sh
 ```
 
-This adds the following config to your `~/.claude.json` (see [`config/mcp-server.json`](config/mcp-server.json) for reference):
+Cela ajoute la configuration suivante dans `~/.claude.json` (voir [`config/mcp-server.json`](config/mcp-server.json) pour reference) :
 
 ```json
 {
@@ -87,116 +127,195 @@ This adds the following config to your `~/.claude.json` (see [`config/mcp-server
       "args": [
         "/home/<YOUR_USER>/.local/bin/chrome-devtools-mcp-wrapper.sh"
       ],
-      "env": {}
+      "env": {
+        "CDP_PORT": "9222"
+      }
     }
   }
 }
 ```
 
-### 4. Launch Chrome with remote debugging
+### 4. Lancer Chrome manuellement (optionnel)
 
-**Important:** Close ALL Chrome instances first (check Task Manager), then relaunch with the debugging flag.
-
-```bash
-"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222
-```
-
-Or use the provided script:
+Si vous preferez lancer Chrome manuellement plutot qu'avec l'auto-launch :
 
 ```bash
-chmod +x scripts/launch-chrome.sh
 ./scripts/launch-chrome.sh
 ```
 
-> If Chrome is already running, the debug port won't open. Make sure to fully quit Chrome before relaunching.
+Ou directement depuis Windows :
 
-### 5. Start Claude Code
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File C:\Users\<USER>\scripts\chrome-debug.ps1
+```
+
+### 5. Demarrer Claude Code
 
 ```bash
 claude
 ```
 
-The MCP Chrome DevTools server will connect automatically to Chrome via the WSL2 gateway IP.
+Le serveur MCP se connecte automatiquement a Chrome. Si Chrome n'est pas actif, il sera lance automatiquement.
 
-## Usage with local dev server
+## Utilisation avec un serveur de dev local
 
-This setup is especially useful during development. Run your dev server and let Claude Code see your app in real time:
+Ce setup est particulierement utile pendant le developpement :
 
 ```
-Terminal 1: npm run dev              → your app on localhost:3000
-Terminal 2: claude                   → Claude Code with browser access
-Chrome:     open with debug flag     → Claude sees localhost:3000
+Terminal 1 : npm run dev              → votre app sur localhost:3000
+Terminal 2 : claude                   → Claude Code avec acces navigateur
+Chrome :     lance automatiquement    → Claude voit localhost:3000
 ```
 
-Claude Code can then:
-- Edit your code
-- Take a screenshot to verify the result
-- Click through your UI to test interactions
-- Check console for errors
-- All without leaving the terminal
+Claude Code peut alors :
+- Modifier votre code
+- Capturer un screenshot pour verifier le resultat
+- Naviguer dans votre interface pour tester les interactions
+- Verifier la console pour les erreurs
+- Tout ca sans quitter le terminal
 
-## Available MCP Tools
+## Diagnostic
 
-| Tool | Description |
+Un script de diagnostic est inclus pour verifier que tout fonctionne :
+
+```bash
+./scripts/check-chrome.sh
+```
+
+Il verifie :
+- Le mode reseau WSL2 (NAT ou mirrored)
+- La connectivite CDP vers Chrome
+- Les onglets Chrome ouverts
+- La presence de PowerShell et du script de lancement
+- Node.js et npx
+
+Exemple de sortie :
+
+```
+==============================
+ MCP Chrome DevTools — Diagnostic
+==============================
+
+[RESEAU] Detection du mode reseau WSL2
+  [OK] Mode NAT detecte (host gateway: 172.x.x.1)
+
+[CDP] Test de connexion CDP sur 172.x.x.1:9222
+  [OK] Chrome CDP accessible — Chrome/131.x.x.x
+  [INFO] WebSocket: ws://172.x.x.1:9222/devtools/browser/...
+
+[TABS] Liste des onglets Chrome
+  [OK] 3 onglet(s) detecte(s)
+
+[PS] Verification PowerShell et script de lancement
+  [OK] powershell.exe accessible depuis WSL
+  [OK] chrome-debug.ps1 trouve
+
+[NPX] Verification de Node.js et npx
+  [OK] Node.js installe : v22.x.x
+  [OK] npx disponible
+
+==============================
+ Resume : 8 OK  0 FAIL  0 WARN
+==============================
+```
+
+## Outils MCP disponibles
+
+| Outil | Description |
 |---|---|
-| `navigate_page` | Navigate to a URL, go back/forward, reload |
-| `take_screenshot` | Capture the viewport or a specific element |
-| `take_snapshot` | Get the accessibility tree (all elements with UIDs) |
-| `click` | Click on an element by UID |
-| `fill` | Type into input fields |
-| `press_key` | Simulate keyboard shortcuts |
-| `evaluate_script` | Run JavaScript in the page |
-| `list_pages` / `select_page` | Manage browser tabs |
-| `list_console_messages` | Read console output |
-| `list_network_requests` | Inspect network activity |
-| `resize_page` | Change viewport dimensions |
-| `emulate` | Emulate dark mode, geolocation, network throttling |
-| `performance_start_trace` | Record performance traces |
+| `navigate_page` | Naviguer vers une URL, retour/avant, recharger |
+| `take_screenshot` | Capturer le viewport ou un element specifique |
+| `take_snapshot` | Obtenir l'arbre d'accessibilite (elements avec UIDs) |
+| `click` | Cliquer sur un element par UID |
+| `fill` | Saisir du texte dans un champ |
+| `press_key` | Simuler des raccourcis clavier |
+| `evaluate_script` | Executer du JavaScript dans la page |
+| `list_pages` / `select_page` | Gerer les onglets du navigateur |
+| `list_console_messages` | Lire les messages console |
+| `list_network_requests` | Inspecter les requetes reseau |
+| `resize_page` | Modifier les dimensions du viewport |
+| `emulate` | Emuler mode sombre, geolocalisation, throttling reseau |
+| `performance_start_trace` | Enregistrer des traces de performance |
 
-## Project Structure
+## Structure du projet
 
 ```
 mcp-chrome-wsl/
 ├── README.md
-├── install.sh                  # One-command setup script
+├── install.sh                          # Script d'installation
 ├── scripts/
-│   ├── chrome-devtools-mcp-wrapper.sh  # WSL2 wrapper (resolves Windows IP)
-│   └── launch-chrome.sh                # Launch Chrome with debug port
+│   ├── chrome-devtools-mcp-wrapper.sh  # Wrapper MCP (auto-launch + reseau WSL2)
+│   ├── launch-chrome.sh                # Lancement Chrome standalone
+│   └── check-chrome.sh                 # Diagnostic de verification
 └── config/
-    └── mcp-server.json                 # Example MCP server config for Claude Code
+    ├── mcp-server.json                 # Exemple de config MCP pour Claude Code
+    └── chrome-debug.ps1                # Script PowerShell (reference)
 ```
 
-## Why a wrapper script?
+## Pourquoi un wrapper ?
 
-On a native Linux or macOS setup, the MCP server connects to Chrome via `localhost:9222`. On WSL2, this doesn't work because:
+Sur un setup Linux ou macOS natif, le serveur MCP se connecte a Chrome via `localhost:9222`. Sur WSL2, ca ne fonctionne pas directement car :
 
-1. Chrome runs on **Windows** (host)
-2. The MCP server runs in **WSL2** (guest VM)
-3. WSL2 uses a NAT network — `localhost` inside WSL ≠ `localhost` on Windows
+1. Chrome tourne sur **Windows** (hote)
+2. Le serveur MCP tourne dans **WSL2** (VM invitee)
+3. WSL2 utilise un reseau NAT — `localhost` dans WSL ≠ `localhost` sur Windows
 
-The wrapper script solves this by dynamically getting the Windows host IP from `ip route show default` and passing it to the MCP server via `--browserUrl`.
+Le wrapper resout ce probleme en :
+- Detectant automatiquement le mode reseau (NAT ou mirrored)
+- Resolvant l'IP de l'hote Windows dynamiquement
+- Lancant Chrome automatiquement si besoin via PowerShell
 
 ## Troubleshooting
 
-### MCP can't connect to Chrome
-- Make sure Chrome was fully closed before relaunching with `--remote-debugging-port=9222`
-- Verify the port is open from WSL2:
-  ```bash
-  WIN_HOST=$(ip route show default | awk '{print $3}')
-  curl http://$WIN_HOST:9222/json/version
-  ```
+### Le MCP ne se connecte pas a Chrome
 
-### Elements not found after page change
-- DOM changes invalidate element UIDs — take a new snapshot after navigation or interactions that modify the page
+1. Lancez le diagnostic :
+   ```bash
+   ./scripts/check-chrome.sh
+   ```
+2. Verifiez que Chrome est bien lance avec le port de debug :
+   ```bash
+   WIN_HOST=$(ip route show default | awk '{print $3}')
+   curl http://$WIN_HOST:9222/json/version
+   ```
+3. Si Chrome est deja ouvert sans debug, fermez-le completement (Gestionnaire des taches → terminer tous les processus Chrome) puis relancez via `./scripts/launch-chrome.sh`.
 
-### Chrome opens but debug port doesn't work
-- Check no other Chrome instance is running (Task Manager → End all Chrome processes)
-- Try a different port if 9222 is in use: `--remote-debugging-port=9333`
+### Chrome se lance mais le port n'est pas accessible depuis WSL
 
-### Windows Firewall blocking the connection
-- Allow inbound connections on port 9222 in Windows Firewall settings
-- Or temporarily disable the firewall to test
+Le portproxy WSL2 n'est peut-etre pas configure. Le script `chrome-debug.ps1` le fait automatiquement, mais il faut des droits administrateur. Relancez :
 
-## License
+```powershell
+# En tant qu'administrateur dans PowerShell
+netsh interface portproxy add v4tov6 listenaddress=0.0.0.0 listenport=9222 connectaddress=::1 connectport=9222
+```
+
+### Les elements ne sont pas trouves apres un changement de page
+
+Les modifications du DOM invalident les UIDs des elements. Prenez un nouveau snapshot apres chaque navigation ou interaction qui modifie la page.
+
+### Le firewall Windows bloque la connexion
+
+- Autorisez les connexions entrantes sur le port 9222 dans les parametres du pare-feu Windows
+- Ou utilisez le script `chrome-debug.ps1` qui configure la regle automatiquement
+
+### Port CDP deja utilise
+
+Utilisez un port different :
+
+```bash
+CDP_PORT=9333 ./scripts/launch-chrome.sh
+CDP_PORT=9333 claude
+```
+
+### Mode mirrored : localhost ne fonctionne pas
+
+Si vous utilisez le mode `networkingMode=mirrored` dans `.wslconfig` et que la connexion ne fonctionne pas, verifiez :
+
+```bash
+# Le wrapper detecte automatiquement le mode — forcez le diagnostic :
+./scripts/check-chrome.sh
+```
+
+## Licence
 
 MIT
