@@ -129,23 +129,43 @@ try_lock_port() {
   return 1  # Un autre wrapper a ete plus rapide
 }
 
+# ── Verifier si un serveur MCP utilise deja ce port ──
+is_mcp_already_connected() {
+  local port="$1"
+  # Chercher un processus chrome-devtools-mcp connecte a ce port (hors notre propre PID)
+  local pids
+  pids=$(pgrep -f "chrome-devtools-mcp.*localhost:${port}" 2>/dev/null || true)
+  for pid in $pids; do
+    # Ignorer nos propres processus (enfants du wrapper courant)
+    if [[ "$pid" != "$$" ]]; then
+      return 0  # Un autre MCP est deja connecte
+    fi
+  done
+  return 1
+}
+
 # ── Trouver et reserver un port libre pour Chrome CDP ──
-# Strategie : on prend le premier port qu'on peut verrouiller.
-# Si Chrome est deja actif dessus (orphelin d'une session precedente),
-# on le reutilise au lieu d'en lancer un nouveau.
+# Double verification : lock fichier + scan des processus MCP actifs.
+# Evite les conflits meme si un lock a ete nettoye entre deux redemarrages.
 find_free_port() {
   local host="$1"
   mkdir -p "$LOCK_DIR"
 
   for port in $(seq "$CDP_PORT_MIN" "$CDP_PORT_MAX"); do
-    # Verifier si un autre wrapper a deja reserve ce port
+    # Verifier si un autre wrapper a deja reserve ce port (lock)
     if ! try_lock_port "$port"; then
-      log_info "Port ${port} : reserve par un autre wrapper"
+      log_info "Port ${port} : reserve par un autre wrapper (lock)"
       continue
     fi
 
-    # Port verrouille par nous ! Chrome peut ou non deja tourner dessus.
-    # Dans les deux cas, main() gerera (reutilisation ou lancement).
+    # Double securite : verifier qu'aucun serveur MCP ne tourne deja sur ce port
+    if is_mcp_already_connected "$port"; then
+      log_info "Port ${port} : serveur MCP deja connecte (processus actif)"
+      rm -rf "${LOCK_DIR}/port-${port}"
+      continue
+    fi
+
+    # Port libre et verifie !
     echo "$port"
     return 0
   done
