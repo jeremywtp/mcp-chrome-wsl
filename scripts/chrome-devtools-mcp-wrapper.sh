@@ -213,6 +213,33 @@ cleanup() {
   rm -rf "${LOCK_DIR}/port-${CDP_PORT}" 2>/dev/null || true
 }
 
+# ── Intercepteur stdin : lazy-launch Chrome au premier appel d'outil ──
+# Lit le flux MCP (JSON-RPC newline-delimited) et lance Chrome uniquement
+# quand un tools/call est detecte, avant de transmettre le message a npx.
+_lazy_chrome_stdin() {
+  local host="$1" port="$2"
+  local chrome_needed=true
+
+  # Si Chrome tourne deja, pas besoin d'intercepter
+  if check_chrome_cdp "$host" "$port"; then
+    chrome_needed=false
+  fi
+
+  while IFS= read -r line; do
+    if "$chrome_needed" && echo "$line" | grep -q '"tools/call"'; then
+      log_info "Premier appel d'outil detecte — lancement de Chrome a la demande..."
+      if ! check_chrome_cdp "$host" "$port"; then
+        launch_chrome "$port"
+        if ! wait_for_chrome "$host" "$port"; then
+          log_error "Impossible de lancer Chrome a la demande. L'outil va echouer."
+        fi
+      fi
+      chrome_needed=false
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
 # ── Main ──
 main() {
   log_info "Demarrage du wrapper MCP Chrome DevTools"
@@ -241,23 +268,20 @@ main() {
   # Installer le trap de nettoyage (libere le lock a la sortie)
   trap cleanup EXIT
 
-  # Verifier si Chrome est deja disponible sur ce port
+  # Chrome sera lance a la demande, uniquement lors du premier appel d'outil.
+  # Cela evite d'ouvrir Chrome a chaque session Claude Code.
   if check_chrome_cdp "$win_host" "$CDP_PORT"; then
     log_info "Chrome deja actif sur http://${win_host}:${CDP_PORT}"
   else
-    # Lancer Chrome puis attendre qu'il soit pret
-    launch_chrome "$CDP_PORT"
-    if ! wait_for_chrome "$win_host" "$CDP_PORT"; then
-      log_error "Impossible de se connecter a Chrome. Abandon."
-      exit 1
-    fi
+    log_info "Chrome non actif — sera lance a la demande lors du premier appel d'outil"
   fi
 
-  # Demarrer le serveur MCP
+  # Demarrer le serveur MCP avec lazy-launch Chrome.
   # On ne fait PAS exec pour que le trap EXIT puisse nettoyer le lock.
-  # npx herite stdin/stdout du shell — le protocole stdio MCP fonctionne normalement.
+  # L'intercepteur stdin detecte le premier tools/call et lance Chrome a ce moment.
   log_info "Lancement du serveur MCP sur le port ${CDP_PORT}..."
-  npx chrome-devtools-mcp@latest --browserUrl "http://${win_host}:${CDP_PORT}" "$@"
+  _lazy_chrome_stdin "$win_host" "$CDP_PORT" | \
+    npx chrome-devtools-mcp@latest --browserUrl "http://${win_host}:${CDP_PORT}" "$@"
 }
 
 main "$@"
