@@ -213,28 +213,22 @@ cleanup() {
   rm -rf "${LOCK_DIR}/port-${CDP_PORT}" 2>/dev/null || true
 }
 
-# ── Intercepteur stdin : lazy-launch Chrome au premier appel d'outil ──
-# Lit le flux MCP (JSON-RPC newline-delimited) et lance Chrome uniquement
-# quand un tools/call est detecte, avant de transmettre le message a npx.
+# ── Intercepteur stdin : lance/relance Chrome a chaque appel d'outil ──
+# Lit le flux MCP (JSON-RPC newline-delimited) et verifie que Chrome est
+# disponible avant chaque tools/call. Si Chrome a ete ferme entre deux
+# appels, il est relance automatiquement.
 _lazy_chrome_stdin() {
   local host="$1" port="$2"
-  local chrome_needed=true
-
-  # Si Chrome tourne deja, pas besoin d'intercepter
-  if check_chrome_cdp "$host" "$port"; then
-    chrome_needed=false
-  fi
 
   while IFS= read -r line; do
-    if "$chrome_needed" && echo "$line" | grep -q '"tools/call"'; then
-      log_info "Premier appel d'outil detecte — lancement de Chrome a la demande..."
+    if echo "$line" | grep -q '"tools/call"'; then
       if ! check_chrome_cdp "$host" "$port"; then
+        log_info "Chrome non disponible — (re)lancement avant l'appel d'outil..."
         launch_chrome "$port"
         if ! wait_for_chrome "$host" "$port"; then
-          log_error "Impossible de lancer Chrome a la demande. L'outil va echouer."
+          log_error "Impossible de (re)lancer Chrome. L'outil va echouer."
         fi
       fi
-      chrome_needed=false
     fi
     printf '%s\n' "$line"
   done
@@ -276,9 +270,9 @@ main() {
     log_info "Chrome non actif — sera lance a la demande lors du premier appel d'outil"
   fi
 
-  # Demarrer le serveur MCP avec lazy-launch Chrome.
+  # Demarrer le serveur MCP avec auto-launch Chrome.
   # On ne fait PAS exec pour que le trap EXIT puisse nettoyer le lock.
-  # L'intercepteur stdin detecte le premier tools/call et lance Chrome a ce moment.
+  # L'intercepteur stdin verifie Chrome avant chaque tools/call et le (re)lance si besoin.
   log_info "Lancement du serveur MCP sur le port ${CDP_PORT}..."
   _lazy_chrome_stdin "$win_host" "$CDP_PORT" | \
     npx chrome-devtools-mcp@latest --browserUrl "http://${win_host}:${CDP_PORT}" "$@"
